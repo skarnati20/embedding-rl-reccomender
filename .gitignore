@@ -1,1 +1,2 @@
 data/20_newsgroups/*
+src/__pycache__/*
