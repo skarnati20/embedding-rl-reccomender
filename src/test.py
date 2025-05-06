@@ -3,6 +3,7 @@ import numpy as np
 
 rec = Reccomender("../data/combined.csv")
 
+
 def generate_reward(filename):
     if filename.startswith("5"):
         return np.random.choice([0, 20], p=[0.9, 0.1])
@@ -13,7 +14,7 @@ def generate_reward(filename):
     else:
         return 0
 
-# Preference phase
+
 preference_counts = {"atheism": 0, "graphics": 0, "baseball": 0}
 for _ in range(1000):
     file, embedding = rec.recommend_article()
