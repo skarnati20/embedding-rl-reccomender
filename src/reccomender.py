@@ -5,7 +5,7 @@ from embedding_distribution import EmbeddingDistribution
 
 
 class Reccomender:
-    def __init__(self, dataset_path):
+    def __init__(self, dataset_path, alpha=0.2):
         df = pd.read_csv(dataset_path)
         self.dataset = {}
         for _, row in df.iterrows():
@@ -14,7 +14,7 @@ class Reccomender:
             if isinstance(embedding, str):
                 embedding = eval(embedding)
             self.dataset[filename] = embedding
-        self.user_profile = EmbeddingDistribution()
+        self.user_profile = EmbeddingDistribution(alpha=alpha)
 
     def register_reaction(self, embedding, reaction):
         self.user_profile.handle_embedding(embedding, reaction)
@@ -61,3 +61,7 @@ class Reccomender:
                 nearest_embedding = embedding
 
         return nearest_file, nearest_embedding
+
+    def visualize_embedding_map(self):
+        fig = self.user_profile.create_interactive_visualization()
+        fig.show()  # This will open in a browser or notebook
