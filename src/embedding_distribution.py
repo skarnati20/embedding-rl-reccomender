@@ -146,7 +146,7 @@ class EmbeddingDistribution:
         self.add_embedding(embedding, reward)
 
     def recommend_embedding(
-        self, temperature=1.0, target_exploration_prob=0.3, embedding_dim=384
+        self, embedding_dim, temperature=1.0, target_exploration_prob=0.3
     ):
         # If no embeddings exist, generate a random unit vector
         if not self.embeddings:

@@ -1,20 +1,69 @@
 import pandas as pd
 import numpy as np
 import math
+import umap
+from sklearn.preprocessing import StandardScaler
 from embedding_distribution import EmbeddingDistribution
 
 
 class Reccomender:
-    def __init__(self, dataset_path, alpha=0.2):
+    def __init__(
+        self,
+        dataset_path,
+        alpha=0.2,
+        gamma_similarity=0.95,
+        beta=2,
+        max_embeddings=100,
+        min_samples_before_removal=10,
+        n_components=10,
+    ):
         df = pd.read_csv(dataset_path)
-        self.dataset = {}
+
+        embeddings_list = []
+        filenames = []
+
         for _, row in df.iterrows():
             filename = str(row["filename"])
             embedding = row["embedding"]
             if isinstance(embedding, str):
                 embedding = eval(embedding)
-            self.dataset[filename] = embedding
-        self.user_profile = EmbeddingDistribution(alpha=alpha)
+            embeddings_list.append(embedding)
+            filenames.append(filename)
+
+        embeddings_array = np.array(embeddings_list)
+
+        # Apply UMAP dimensionality reduction
+        print(
+            f"Reducing dimensionality from {embeddings_array.shape[1]} to {n_components} dimensions..."
+        )
+
+        # Standardize the embeddings
+        scaler = StandardScaler()
+        scaled_embeddings = scaler.fit_transform(embeddings_array)
+
+        # Perform UMAP reduction
+        reducer = umap.UMAP(
+            n_neighbors=15,
+            min_dist=0.1,
+            n_components=n_components,
+            metric="cosine",
+            random_state=42,
+        )
+        reduced_embeddings = reducer.fit_transform(scaled_embeddings)
+
+        # Store the reduced embeddings in the dataset dictionary
+        self.dataset = {}
+        for i, filename in enumerate(filenames):
+            self.dataset[filename] = reduced_embeddings[i]
+
+        self.embedding_dimension = n_components
+        self.user_profile = EmbeddingDistribution(
+            alpha=alpha,
+            gamma_similarity=gamma_similarity,
+            beta=beta,
+            max_embeddings=max_embeddings,
+            min_samples_before_removal=min_samples_before_removal,
+        )
 
     def register_reaction(self, embedding, reaction):
         self.user_profile.handle_embedding(embedding, reaction)
@@ -23,7 +72,9 @@ class Reccomender:
         if not len(self.dataset):
             return []
 
-        recommended_embedding, _ = self.user_profile.recommend_embedding()
+        recommended_embedding, _ = self.user_profile.recommend_embedding(
+            self.embedding_dimension
+        )
         if recommended_embedding is None:
             return []
 
