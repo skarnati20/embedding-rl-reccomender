@@ -1,2 +1,28 @@
-data/20_newsgroups/*
-src/__pycache__/*
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache/
+*.egg-info/
+
+# Virtual environments
+venv/
+myenv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files
+data/*.csv

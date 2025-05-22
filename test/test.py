@@ -1,7 +1,7 @@
-from reccomender import Reccomender
+from src.recommender import Recommender
 import numpy as np
 
-rec = Reccomender("../data/combined.csv", 0.4, 0.98, 4)
+rec = Recommender("data/combined.csv", 0.4, 0.98, 4)
 
 
 def generate_reward(filename):

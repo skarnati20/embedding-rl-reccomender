@@ -6,7 +6,7 @@ from sklearn.preprocessing import StandardScaler
 from embedding_distribution import EmbeddingDistribution
 
 
-class Reccomender:
+class Recommender:
     def __init__(
         self,
         dataset_path,
