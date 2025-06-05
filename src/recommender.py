@@ -1,8 +1,8 @@
 import pandas as pd
 import numpy as np
 import math
-import umap
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import IncrementalPCA
 from embedding_distribution import EmbeddingDistribution
 
 
@@ -15,7 +15,7 @@ class Recommender:
         beta=2,
         max_embeddings=100,
         min_samples_before_removal=10,
-        n_components=10,
+        n_components=128,
     ):
         df = pd.read_csv(dataset_path)
 
@@ -41,15 +41,10 @@ class Recommender:
         scaler = StandardScaler()
         scaled_embeddings = scaler.fit_transform(embeddings_array)
 
-        # Perform UMAP reduction
-        reducer = umap.UMAP(
-            n_neighbors=15,
-            min_dist=0.1,
-            n_components=n_components,
-            metric="cosine",
-            random_state=42,
-        )
-        reduced_embeddings = reducer.fit_transform(scaled_embeddings)
+        # Perform Incremental PCA reduction
+        ipca = IncrementalPCA(n_components=n_components)
+        ipca.fit(scaled_embeddings)
+        reduced_embeddings = ipca.transform(scaled_embeddings)
 
         # Store the reduced embeddings in the dataset dictionary
         self.dataset = {}
@@ -68,12 +63,12 @@ class Recommender:
     def register_reaction(self, embedding, reaction):
         self.user_profile.handle_embedding(embedding, reaction)
 
-    def recommend_article(self):
+    def recommend_article(self, exploration_rate):
         if not len(self.dataset):
             return []
 
         recommended_embedding, _ = self.user_profile.recommend_embedding(
-            self.embedding_dimension
+            self.embedding_dimension, 1, exploration_rate
         )
         if recommended_embedding is None:
             return []
