@@ -1,6 +1,7 @@
 import math
 import numpy as np
 import pandas as pd
+import faiss
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import IncrementalPCA
 from embedding_distribution import EmbeddingDistribution
@@ -11,8 +12,7 @@ class Recommender:
     A recommendation system that uses embeddings to suggest articles/content based on user preferences.
     
     The recommender loads a dataset of articles with their embeddings, reduces dimensionality for efficiency,
-    and uses an EmbeddingDistribution to learn user preferences through feedback. It can recommend new
-    articles by finding the closest match to the user's learned preferences.
+    normalizes embeddings for cosine similarity, and uses Faiss for fast nearest neighbor search.
     """
     
     def __init__(
@@ -31,7 +31,9 @@ class Recommender:
         This constructor:
         1. Loads the dataset from CSV (expecting 'filename' and 'embedding' columns)
         2. Reduces embedding dimensionality using Incremental PCA for efficiency
-        3. Sets up an EmbeddingDistribution to track user preferences
+        3. Normalizes embeddings for cosine similarity calculations
+        4. Sets up Faiss index for fast nearest neighbor search
+        5. Sets up an EmbeddingDistribution to track user preferences
         
         Args:
             dataset_path (str): Path to CSV file containing filename and embedding columns
@@ -61,7 +63,7 @@ class Recommender:
             filenames.append(filename)
 
         # Convert to numpy array for efficient processing
-        embeddings_array = np.array(embeddings_list)
+        embeddings_array = np.array(embeddings_list, dtype=np.float32)
 
         # Perform dimensionality reduction for computational efficiency
         print(
@@ -74,22 +76,38 @@ class Recommender:
         scaled_embeddings = scaler.fit_transform(embeddings_array)
 
         # Use Incremental PCA for dimensionality reduction
-        # Incremental PCA is preferred over regular PCA when we expect to process
-        # data in batches or when the dataset is too large to fit in memory
         ipca = IncrementalPCA(n_components=n_components)
         ipca.fit(scaled_embeddings)
-        reduced_embeddings = ipca.transform(scaled_embeddings)
+        reduced_embeddings = ipca.transform(scaled_embeddings).astype(np.float32)
 
-        # Store the reduced embeddings in a dictionary mapping filename to embedding
-        self.dataset = {}
-        for i, filename in enumerate(filenames):
-            self.dataset[filename] = reduced_embeddings[i]
+        # Normalize embeddings for cosine similarity
+        # After normalization, L2 distance = cosine similarity
+        print("Normalizing embeddings for cosine similarity...")
+        norms = np.linalg.norm(reduced_embeddings, axis=1, keepdims=True)
+        # Avoid division by zero
+        norms = np.where(norms == 0, 1, norms)
+        self.normalized_embeddings = reduced_embeddings / norms
 
-        # Store the embedding dimension for future reference
+        # Store filenames and create mapping
+        self.filenames = filenames
+        self.filename_to_index = {filename: i for i, filename in enumerate(filenames)}
+        
+        # Store preprocessing components for future use
+        self.scaler = scaler
+        self.ipca = ipca
         self.embedding_dimension = n_components
         
+        # Create Faiss index for fast similarity search
+        print("Building Faiss index...")
+        # Use IndexFlatL2 for exact search with L2 distance
+        # On normalized vectors, L2 distance approximates cosine similarity
+        self.faiss_index = faiss.IndexFlatL2(n_components)
+        self.faiss_index.add(self.normalized_embeddings)
+        
+        # Keep track of available articles (for removal after recommendation)
+        self.available_indices = set(range(len(filenames)))
+        
         # Initialize the user profile using EmbeddingDistribution
-        # This will learn and track user preferences over time
         self.user_profile = EmbeddingDistribution(
             alpha=alpha,
             gamma_similarity=gamma_similarity,
@@ -102,24 +120,15 @@ class Recommender:
         """
         Record a user's reaction to a specific embedding.
         
-        This method feeds user feedback into the EmbeddingDistribution to update
-        preferences. Positive reactions increase preference for similar embeddings,
-        while negative reactions decrease it.
-        
         Args:
             embedding: The embedding vector that the user reacted to
             reaction (float): The user's reaction score (positive = liked, negative = disliked)
         """
         self.user_profile.handle_embedding(embedding, reaction)
 
-    def recommend_article(self, exploration_rate):
+    def recommend_article(self, exploration_rate, k_candidates=10):
         """
-        Recommend an article based on learned user preferences.
-        
-        This method:
-        1. Gets a recommended embedding from the user profile (balancing exploration/exploitation)
-        2. Finds the closest article in the dataset to that embedding
-        3. Removes the recommended article from the dataset to avoid repeated recommendations
+        Recommend an article based on learned user preferences using Faiss.
         
         Args:
             exploration_rate (float): Probability of exploration vs exploitation (0-1)
@@ -131,11 +140,10 @@ class Recommender:
             list: Empty list if no articles available
         """
         # Check if we have any articles left to recommend
-        if not len(self.dataset):
+        if not self.available_indices:
             return []
 
         # Get a recommended embedding from the user profile
-        # This balances between exploring new areas and exploiting known preferences
         recommended_embedding, _ = self.user_profile.recommend_embedding(
             self.embedding_dimension, 1, exploration_rate
         )
@@ -143,71 +151,97 @@ class Recommender:
         if recommended_embedding is None:
             return []
 
-        # Find the article in our dataset that's closest to the recommended embedding
-        nearest_file, nearest_embedding = self.find_nearest_embedding(
-            recommended_embedding
+        # Find nearest neighbors using Faiss
+        nearest_filename, nearest_embedding = self.find_nearest_embedding_faiss(
+            recommended_embedding, k_candidates
         )
         
-        # Remove the recommended article from the dataset to avoid re-recommending it
-        del self.dataset[nearest_file]
+        if nearest_filename is None:
+            return []
         
-        return nearest_file, nearest_embedding
+        # Remove the recommended article from available set
+        article_index = self.filename_to_index[nearest_filename]
+        self.available_indices.discard(article_index)
+        
+        return nearest_filename, nearest_embedding
 
-    def find_nearest_embedding(self, query_embedding):
+    def find_nearest_embedding_faiss(self, query_embedding, k=10):
         """
-        Find the article with the embedding most similar to the query embedding.
+        Find the most similar available article using Faiss.
         
-        Uses cosine similarity to measure the angle between embeddings, which is
-        effective for high-dimensional sparse data like text embeddings. Cosine
-        similarity focuses on the direction rather than magnitude of vectors.
+        Args:
+            query_embedding: The target embedding to find matches for
+            k (int): Number of candidates to search through
+            
+        Returns:
+            tuple: (filename, embedding) of the most similar available article
+            None: If no articles are available
+        """
+        if not self.available_indices:
+            return None, None
+
+        # Reshape query for Faiss (needs to be 2D)
+        query_reshaped = np.array(query_embedding, dtype=np.float32).reshape(1, -1)
+        
+        # Search for k nearest neighbors
+        # We search for more than we need in case some are already recommended
+        search_k = min(k * 2, len(self.available_indices))
+        distances, indices = self.faiss_index.search(query_reshaped, search_k)
+        
+        # Find the first available (not yet recommended) article
+        for idx in indices[0]:
+            if idx in self.available_indices:
+                filename = self.filenames[idx]
+                embedding = self.normalized_embeddings[idx]
+                return filename, embedding
+        
+        # Fallback: if no available articles found in search results
+        # (shouldn't happen with sufficient search_k)
+        if self.available_indices:
+            # Just return the first available article
+            available_idx = next(iter(self.available_indices))
+            filename = self.filenames[available_idx]
+            embedding = self.normalized_embeddings[available_idx]
+            return filename, embedding
+        
+        return None, None
+
+    def find_nearest_embedding_manual(self, query_embedding):
+        """
+        Fallback method: Find the most similar embedding using manual cosine similarity.
+        This is kept for compatibility but is slower than the Faiss method.
         
         Args:
             query_embedding: The target embedding to find matches for
             
         Returns:
-            tuple: (filename, embedding) of the most similar article
-            None: If no articles are available in the dataset
+            tuple: (filename, embedding) of the most similar available article
         """
-        if not self.dataset:
-            return None
+        if not self.available_indices:
+            return None, None
 
-        max_similarity = -1  # Cosine similarity ranges from -1 to 1
-        nearest_file = None
+        max_similarity = -1
+        nearest_filename = None
         nearest_embedding = None
 
-        # Iterate through all articles in the dataset
-        for filename, embedding in self.dataset.items():
-            # Calculate cosine similarity manually
-            dot_product = sum(a * b for a, b in zip(query_embedding, embedding))
-            magnitude1 = math.sqrt(sum(a * a for a in query_embedding))
-            magnitude2 = math.sqrt(sum(b * b for b in embedding))
+        # Only check available articles
+        for idx in self.available_indices:
+            filename = self.filenames[idx]
+            embedding = self.normalized_embeddings[idx]
+            
+            # For normalized vectors, dot product = cosine similarity
+            similarity = np.dot(query_embedding, embedding)
 
-            # Handle edge case where one of the embeddings is zero vector
-            if magnitude1 == 0 or magnitude2 == 0:
-                similarity = 0
-            else:
-                similarity = dot_product / (magnitude1 * magnitude2)
-
-            # Keep track of the most similar embedding found so far
             if similarity > max_similarity:
                 max_similarity = similarity
-                nearest_file = filename
+                nearest_filename = filename
                 nearest_embedding = embedding
 
-        return nearest_file, nearest_embedding
+        return nearest_filename, nearest_embedding
 
     def visualize_embedding_map(self):
         """
         Create and display an interactive visualization of the user's embedding preferences.
-        
-        This method uses the EmbeddingDistribution's visualization capabilities to show:
-        - The user's learned embedding preferences in 2D space
-        - Point sizes representing preference strengths
-        - Point colors representing how often embeddings have been sampled
-        
-        The visualization opens in a browser or displays in a Jupyter notebook,
-        providing insights into what the user likes and how the recommendation
-        system has learned their preferences.
         """
         fig = self.user_profile.create_interactive_visualization()
-        fig.show()  # This will open in a browser or notebook
+        fig.show()
